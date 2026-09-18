@@ -24,6 +24,37 @@ use super::{
 };
 
 impl TextEmbedding {
+    /// Load an already downloaded model without constructing a network client.
+    /// Returns None if any required ONNX, external-data, or tokenizer file is absent.
+    /// Corrupt cached files are errors, never an implicit request to download replacements.
+    #[cfg(feature = "hf-hub")]
+    pub fn try_new_cached(options: TextInitOptions) -> Result<Option<Self>> {
+        let model_info = Self::get_model_info(&options.model_name)?;
+        let cache = hf_hub::Cache::new(crate::common::hf_cache_dir(options.cache_dir));
+        let repo = cache.model(model_info.model_code.clone());
+        let Some(files) = cached_model_files(&repo, model_info) else {
+            return Ok(None);
+        };
+        let tokenizer = load_tokenizer(
+            crate::common::TokenizerFiles {
+                tokenizer_file: std::fs::read(&files[1])?,
+                config_file: std::fs::read(&files[2])?,
+                special_tokens_map_file: std::fs::read(&files[3])?,
+                tokenizer_config_file: std::fs::read(&files[4])?,
+            },
+            options.max_length,
+        )?;
+        let session = init_session_builder(options.execution_providers, options.intra_threads)?
+            .commit_from_file(&files[0])?;
+        Ok(Some(Self::new(
+            tokenizer,
+            session,
+            Self::get_default_pooling_method(&options.model_name),
+            Self::get_quantization_mode(&options.model_name),
+            model_info.output_key.clone(),
+        )))
+    }
+
     /// Try to generate a new TextEmbedding Instance
     ///
     /// Uses the highest level of Graph optimization
@@ -119,6 +150,49 @@ impl TextEmbedding {
             model.pooling,
             model.quantization,
             model.output_key,
+        ))
+    }
+
+    /// Load a local paired text encoder with a fixed context window and external tensor files.
+    pub fn try_new_from_path(
+        path: impl AsRef<std::path::Path>,
+        tokenizer_files: crate::common::TokenizerFiles,
+        options: InitOptionsUserDefined,
+    ) -> Result<Self> {
+        let mut tokenizer = load_tokenizer(tokenizer_files, options.max_length)?;
+        if let Some(padding) = tokenizer.get_padding().cloned() {
+            tokenizer.with_padding(Some(tokenizers::PaddingParams {
+                strategy: tokenizers::PaddingStrategy::Fixed(options.max_length),
+                ..padding
+            }));
+        }
+        let session = init_session_builder(options.execution_providers, options.intra_threads)?
+            .commit_from_file(path)?;
+        Ok(Self::new(
+            tokenizer,
+            session,
+            None,
+            QuantizationMode::None,
+            Some(OutputKey::ByName("text_embeds")),
+        ))
+    }
+
+    /// DeepGHS embeds its complete fixed-length tokenizer configuration in tokenizer.json.
+    pub fn try_new_from_deepghs_path(
+        path: impl AsRef<std::path::Path>,
+        tokenizer_path: impl AsRef<std::path::Path>,
+        options: InitOptionsUserDefined,
+    ) -> Result<Self> {
+        let tokenizer = Tokenizer::from_file(tokenizer_path)
+            .map_err(|error| Error::Tokenization(error.to_string()))?;
+        let session = init_session_builder(options.execution_providers, options.intra_threads)?
+            .commit_from_file(path)?;
+        Ok(Self::new(
+            tokenizer,
+            session,
+            None,
+            QuantizationMode::None,
+            Some(OutputKey::ByName("embeddings")),
         ))
     }
 
@@ -399,9 +473,19 @@ impl TextEmbedding {
 
                 let mut session_inputs = ort::inputs![
                     "input_ids" => Value::from_array(inputs_ids_array)?,
-                    "attention_mask" => Value::from_array(attention_mask_array.clone())?,
                 ];
 
+                if self
+                    .session
+                    .inputs()
+                    .iter()
+                    .any(|input| input.name() == "attention_mask")
+                {
+                    session_inputs.push((
+                        "attention_mask".into(),
+                        Value::from_array(attention_mask_array.clone())?.into(),
+                    ));
+                }
                 if self.need_token_type_ids {
                     session_inputs.push((
                         "token_type_ids".into(),
@@ -457,9 +541,90 @@ impl TextEmbedding {
     }
 }
 
+/// Resolve the entire file set before opening an ONNX session. CacheRepo has no network API.
+#[cfg(feature = "hf-hub")]
+fn cached_model_files(
+    repo: &hf_hub::CacheRepo,
+    info: &ModelInfo<EmbeddingModel>,
+) -> Option<Vec<PathBuf>> {
+    [
+        &info.model_file[..],
+        "tokenizer.json",
+        "config.json",
+        "special_tokens_map.json",
+        "tokenizer_config.json",
+    ]
+    .into_iter()
+    .chain(info.additional_files.iter().map(String::as_str))
+    .map(|name| repo.get(name).filter(|path| path.is_file()))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "hf-hub")]
+    #[test]
+    fn cached_loading_requires_every_model_and_tokenizer_file() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "fastembed-cache-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        struct TestDirectory(PathBuf);
+        impl Drop for TestDirectory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = TestDirectory(directory.clone());
+        for model in [EmbeddingModel::BGESmallENV15, EmbeddingModel::ClipVitB32] {
+            let mut info = TextEmbedding::get_model_info(&model).unwrap().clone();
+            // External ONNX data must be accounted for even when today's model has none.
+            info.additional_files
+                .push("external-test-data.bin".to_owned());
+            let source = hf_hub::Repo::model(info.model_code.clone());
+            let snapshot = directory
+                .join(source.folder_name())
+                .join("snapshots/test-commit");
+            let repo = hf_hub::Cache::new(directory.clone()).repo(source);
+            repo.create_ref("test-commit").unwrap();
+            assert!(cached_model_files(&repo, &info).is_none());
+            let filenames = [
+                &info.model_file[..],
+                "tokenizer.json",
+                "config.json",
+                "special_tokens_map.json",
+                "tokenizer_config.json",
+            ]
+            .into_iter()
+            .chain(info.additional_files.iter().map(String::as_str))
+            .collect::<Vec<_>>();
+            for name in &filenames {
+                let path = snapshot.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, b"cached fixture").unwrap();
+            }
+            assert_eq!(
+                cached_model_files(&repo, &info).unwrap().len(),
+                filenames.len()
+            );
+            for name in filenames {
+                let path = snapshot.join(name);
+                std::fs::remove_file(&path).unwrap();
+                assert!(
+                    cached_model_files(&repo, &info).is_none(),
+                    "missing {name} was accepted"
+                );
+                std::fs::write(path, b"cached fixture").unwrap();
+            }
+        }
+    }
 
     #[test]
     fn quantized_variants_have_explicit_pooling() {

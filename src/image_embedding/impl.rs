@@ -7,6 +7,27 @@ use ort::{session::Session, value::Value};
 use std::path::PathBuf;
 use std::{io::Cursor, path::Path};
 
+/// Opt-in diagnostics for the first three image batches, including warmup.
+/// Keeping the newer API behind a feature preserves compatibility with older runtimes.
+#[cfg(feature = "ort-profiling")]
+fn image_profile_options() -> Result<Option<ort::session::RunOptions>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static RUN: AtomicUsize = AtomicUsize::new(0);
+    let Some(directory) = std::env::var_os("NICEGAL_ORT_PROFILE_DIR") else {
+        return Ok(None);
+    };
+    let run = RUN.fetch_add(1, Ordering::Relaxed);
+    if run >= 3 {
+        return Ok(None);
+    }
+    std::fs::create_dir_all(&directory)?;
+    let mut options = ort::session::RunOptions::new()?;
+    options.enable_profiling(
+        Path::new(&directory).join(format!("image-{}-{run}", std::process::id())),
+    )?;
+    Ok(Some(options))
+}
+
 use crate::{
     common::{init_session_builder, normalize, Error, Result},
     models::image_embedding::models_list,
@@ -17,11 +38,29 @@ use crate::{
 use super::ImageInitOptions;
 use super::{
     init::{ImageInitOptionsUserDefined, UserDefinedImageEmbeddingModel},
-    utils::{Compose, Transform, TransformData},
-    ImageEmbedding, DEFAULT_BATCH_SIZE,
+    utils::Compose,
+    ImageEmbedding, ImagePreprocessor, DEFAULT_BATCH_SIZE,
 };
 
 impl ImageEmbedding {
+    /// Load cached image encoder files without constructing a network client.
+    #[cfg(feature = "hf-hub")]
+    pub fn try_new_cached(options: ImageInitOptions) -> Result<Option<Self>> {
+        let info = Self::get_model_info(&options.model_name);
+        let cache = hf_hub::Cache::new(crate::common::hf_cache_dir(options.cache_dir));
+        let repo = cache.model(options.model_name.to_string());
+        let (Some(model), Some(config)) = (
+            repo.get(&info.model_file),
+            repo.get("preprocessor_config.json"),
+        ) else {
+            return Ok(None);
+        };
+        let preprocessor = ImagePreprocessor::new(Compose::from_file(config)?);
+        let session = init_session_builder(options.execution_providers, options.intra_threads)?
+            .commit_from_file(model)?;
+        Ok(Some(Self::new(preprocessor, session)))
+    }
+
     /// Try to generate a new ImageEmbedding Instance
     ///
     /// Uses the highest level of Graph optimization
@@ -50,7 +89,7 @@ impl ImageEmbedding {
                     file: "preprocessor_config.json".into(),
                     source: Box::new(e),
                 })?;
-        let preprocessor = Compose::from_file(preprocessor_file)?;
+        let preprocessor = ImagePreprocessor::new(Compose::from_file(preprocessor_file)?);
 
         let model_file_name = ImageEmbedding::get_model_info(&model_name).model_file;
         let model_file_reference =
@@ -79,7 +118,7 @@ impl ImageEmbedding {
             intra_threads,
         } = options;
 
-        let preprocessor = Compose::from_bytes(model.preprocessor_file)?;
+        let preprocessor = ImagePreprocessor::new(Compose::from_bytes(model.preprocessor_file)?);
 
         let session = init_session_builder(execution_providers, intra_threads)?
             .commit_from_memory(&model.onnx_file)?;
@@ -87,11 +126,49 @@ impl ImageEmbedding {
         Ok(Self::new(preprocessor, session))
     }
 
+    /// Load local ONNX files, resolving external tensor data relative to the graph.
+    pub fn try_new_from_path(
+        path: impl AsRef<std::path::Path>,
+        preprocessor_file: &[u8],
+        options: ImageInitOptionsUserDefined,
+    ) -> Result<Self> {
+        let mut config: serde_json::Value = serde_json::from_slice(preprocessor_file)
+            .map_err(|error| Error::PreprocessorConfig(error.to_string()))?;
+        config["nicegal_pillow_resize"] = true.into();
+        let config = serde_json::to_vec(&config)
+            .map_err(|error| Error::PreprocessorConfig(error.to_string()))?;
+        let preprocessor = ImagePreprocessor::new(Compose::from_bytes(config)?);
+        let session = init_session_builder(options.execution_providers, options.intra_threads)?
+            .commit_from_file(path)?;
+        Ok(Self::new(preprocessor, session))
+    }
+
+    /// Load a DeepGHS SigLIP ONNX encoder with its native Pillow transform description.
+    pub fn try_new_from_deepghs_path(
+        path: impl AsRef<Path>,
+        preprocessor_file: &[u8],
+        options: ImageInitOptionsUserDefined,
+    ) -> Result<Self> {
+        let preprocessor = ImagePreprocessor::new(Compose::from_deepghs_bytes(preprocessor_file)?);
+        let session = init_session_builder(options.execution_providers, options.intra_threads)?
+            .commit_from_file(path)?;
+        let mut model = Self::new(preprocessor, session);
+        model.output_key = Some("embeddings");
+        Ok(model)
+    }
+
+    /// Select a named embedding output when an ONNX graph also returns token features.
+    pub fn with_output_key(mut self, key: &'static str) -> Self {
+        self.output_key = Some(key);
+        self
+    }
+
     /// Private method to return an instance
-    fn new(preprocessor: Compose, session: Session) -> Self {
+    fn new(preprocessor: ImagePreprocessor, session: Session) -> Self {
         Self {
             preprocessor,
             session,
+            output_key: None,
         }
     }
 
@@ -118,6 +195,14 @@ impl ImageEmbedding {
             .into_iter()
             .find(|m| &m.model == model)
             .expect("Model not found in supported models list. This is a bug - please report it.")
+    }
+
+    /// Return a cloneable CPU preprocessor configured for this image model.
+    ///
+    /// Use it to preprocess images on worker threads, then pass the resulting arrays to
+    /// [`Self::embed_preprocessed`]. It deliberately does not include the mutable ONNX session.
+    pub fn preprocessor(&self) -> ImagePreprocessor {
+        self.preprocessor.clone()
     }
 
     /// Method to generate image embeddings for a Vec of image bytes
@@ -202,17 +287,16 @@ impl ImageEmbedding {
     pub fn embed_images(&mut self, imgs: Vec<DynamicImage>) -> Result<Vec<Embedding>> {
         let inputs = imgs
             .into_iter()
-            .map(|img| {
-                let pixels = self.preprocessor.transform(TransformData::Image(img))?;
-                match pixels {
-                    TransformData::NdArray(array) => Ok(array),
-                    _ => Err(Error::PreprocessorConfig(
-                        "Preprocessor configuration error!".into(),
-                    )),
-                }
-            })
+            .map(|img| self.preprocessor.preprocess(img))
             .collect::<Result<Vec<Array3<f32>>>>()?;
+        self.embed_preprocessed(inputs)
+    }
 
+    /// Embed images already prepared by this model's [`ImagePreprocessor`].
+    ///
+    /// This separates CPU image preprocessing from mutable ONNX Runtime inference, so callers can
+    /// keep the accelerator busy while worker threads prepare later batches.
+    pub fn embed_preprocessed(&mut self, inputs: Vec<Array3<f32>>) -> Result<Vec<Embedding>> {
         // Extract the batch size
         let inputs_view: Vec<ArrayView3<f32>> = inputs.iter().map(|img| img.view()).collect();
         let pixel_values_array = ndarray::stack(ndarray::Axis(0), &inputs_view)
@@ -224,21 +308,30 @@ impl ImageEmbedding {
                 .map_err(|e| Error::OrtSession(e.to_string()))?,
         ];
 
-        let outputs = self
-            .session
-            .run(session_inputs)
-            .map_err(|e| Error::OrtSession(e.to_string()))?;
+        #[cfg(feature = "ort-profiling")]
+        let profile_options = image_profile_options()?;
+        #[cfg(not(feature = "ort-profiling"))]
+        let profile_options: Option<ort::session::RunOptions> = None;
+        let outputs = match profile_options.as_ref() {
+            Some(options) => self.session.run_with_options(session_inputs, options),
+            None => self.session.run(session_inputs),
+        }
+        .map_err(|e| Error::OrtSession(e.to_string()))?;
 
         // Try to get the only output key
         // If multiple, then default to few known keys `image_embeds` and `last_hidden_state`
-        let last_hidden_state_key = match outputs.len() {
-            1 => vec![outputs
-                .keys()
-                .next()
-                .ok_or_else(|| Error::OutputKeyMissing {
-                    key: "<only output>".into(),
-                })?],
-            _ => vec!["image_embeds", "last_hidden_state"],
+        let last_hidden_state_key = if let Some(key) = self.output_key {
+            vec![key]
+        } else {
+            match outputs.len() {
+                1 => vec![outputs
+                    .keys()
+                    .next()
+                    .ok_or_else(|| Error::OutputKeyMissing {
+                        key: "<only output>".into(),
+                    })?],
+                _ => vec!["image_embeds", "last_hidden_state"],
+            }
         };
 
         // Extract tensor and handle different dimensionalities

@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 //! [FastEmbed](https://github.com/Anush008/fastembed-rs) - Fast, light, accurate library built for retrieval embedding generation.
 //!
@@ -122,7 +123,8 @@ pub use crate::models::bgem3::Bgem3Model;
 // For Image Embedding
 #[cfg(feature = "image-models")]
 pub use crate::image_embedding::{
-    ImageEmbedding, ImageInitOptions, ImageInitOptionsUserDefined, UserDefinedImageEmbeddingModel,
+    ImageEmbedding, ImageInitOptions, ImageInitOptionsUserDefined, ImagePreprocessor,
+    UserDefinedImageEmbeddingModel,
 };
 pub use crate::models::image_embedding::ImageEmbeddingModel;
 

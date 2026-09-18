@@ -242,9 +242,7 @@ pub fn pull_from_hf(
 ) -> Result<ApiRepo> {
     use std::env;
 
-    let cache_dir = env::var("HF_HOME")
-        .map(PathBuf::from)
-        .unwrap_or(default_cache_dir);
+    let cache_dir = hf_cache_dir(default_cache_dir);
 
     let endpoint = env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
 
@@ -257,6 +255,14 @@ pub fn pull_from_hf(
 
     let repo = api.model(model_name);
     Ok(repo)
+}
+
+/// Shared by download-capable and cache-only loaders so both resolve the same files.
+#[cfg(feature = "hf-hub")]
+pub(crate) fn hf_cache_dir(default_cache_dir: PathBuf) -> PathBuf {
+    std::env::var("HF_HOME")
+        .map(PathBuf::from)
+        .unwrap_or(default_cache_dir)
 }
 
 pub(crate) fn init_session_builder(
@@ -277,9 +283,32 @@ pub(crate) fn init_session_builder(
 
     let builder_error = |err: ort::Error<SessionBuilder>| Error::OrtBuilder(err.to_string());
 
-    let mut builder = ort::session::Session::builder()?
-        .with_execution_providers(execution_providers)
-        .map_err(builder_error)?
+    let builder = ort::session::Session::builder()?;
+    #[cfg(feature = "webgpu")]
+    let use_webgpu = execution_providers
+        .iter()
+        .any(|ep| ep.downcast_ref::<ort::ep::WebGPU>().is_some());
+    #[cfg(not(feature = "webgpu"))]
+    let use_webgpu = false;
+    let builder = if use_webgpu {
+        let environment = ort::environment::Environment::current()?;
+        let device = environment
+            .devices()
+            .find(|device| {
+                device
+                    .ep()
+                    .is_ok_and(|name| name == "WebGpuExecutionProvider")
+            })
+            .ok_or_else(|| ort::Error::new("No native WebGPU device is available"))?;
+        builder
+            .with_devices([device], None)
+            .map_err(builder_error)?
+    } else {
+        builder
+            .with_execution_providers(execution_providers)
+            .map_err(builder_error)?
+    };
+    let mut builder = builder
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(builder_error)?
         .with_intra_threads(threads)
