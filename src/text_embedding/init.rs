@@ -205,6 +205,7 @@ pub struct TextEmbedding {
     pub tokenizer: Tokenizer,
     pub(crate) pooling: Option<Pooling>,
     pub(crate) session: Session,
+    pub(crate) need_attention_mask: bool,
     pub(crate) need_token_type_ids: bool,
     pub(crate) quantization: QuantizationMode,
     pub(crate) output_key: Option<OutputKey>,

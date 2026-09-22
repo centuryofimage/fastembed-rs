@@ -131,6 +131,7 @@ impl ImagePreprocessor {
 pub struct ImageEmbedding {
     pub(crate) preprocessor: ImagePreprocessor,
     pub(crate) session: Session,
+    pub(crate) output_key: Option<&'static str>,
 }
 
 #[cfg(test)]

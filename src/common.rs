@@ -262,9 +262,7 @@ pub fn pull_from_hf(
 ) -> Result<ApiRepo> {
     use std::env;
 
-    let cache_dir = env::var("HF_HOME")
-        .map(PathBuf::from)
-        .unwrap_or(default_cache_dir);
+    let cache_dir = hf_cache_dir(default_cache_dir);
 
     let endpoint = env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
 
@@ -284,6 +282,14 @@ pub fn pull_from_hf(
 
     let repo = api.model(model_name);
     Ok(repo)
+}
+
+/// Resolve the cache directory without constructing a network client.
+#[cfg(feature = "hf-hub")]
+pub(crate) fn hf_cache_dir(default_cache_dir: PathBuf) -> PathBuf {
+    std::env::var("HF_HOME")
+        .map(PathBuf::from)
+        .unwrap_or(default_cache_dir)
 }
 
 /// Token written by `huggingface-cli login`. `Cache::default` panics without a home dir.
@@ -344,10 +350,23 @@ impl EncodedBatch {
         &mut self,
         need_token_type_ids: bool,
     ) -> Result<Vec<(Cow<'static, str>, SessionInputValue<'static>)>> {
+        self.session_inputs_with_attention_mask(true, need_token_type_ids)
+    }
+
+    pub fn session_inputs_with_attention_mask(
+        &mut self,
+        need_attention_mask: bool,
+        need_token_type_ids: bool,
+    ) -> Result<Vec<(Cow<'static, str>, SessionInputValue<'static>)>> {
         let mut inputs = ort::inputs![
             "input_ids" => Value::from_array(self.input_ids.clone())?,
-            "attention_mask" => Value::from_array(self.attention_mask.clone())?,
         ];
+        if need_attention_mask {
+            inputs.push((
+                "attention_mask".into(),
+                Value::from_array(self.attention_mask.clone())?.into(),
+            ));
+        }
         if need_token_type_ids {
             let token_type_ids = std::mem::take(&mut self.token_type_ids);
             inputs.push((
