@@ -3,6 +3,7 @@ name = "fastembed"
 version = "7.1.0"
 edition = "2021"
 rust-version = "1.88"
+autotests = false
 description = "Library for generating vector embeddings, reranking locally."
 license = "Apache-2.0"
 authors = [
@@ -20,6 +21,12 @@ documentation = "https://docs.rs/fastembed"
 repository = "https://github.com/Anush008/fastembed-rs"
 homepage = "https://crates.io/crates/fastembed"
 include = ["src/**/*", "tests/**/*", "Cargo.toml", "README.md", "LICENSE"]
+
+# This vendored dependency's upstream tests require an independently configured
+# ONNX Runtime/model environment. The application owns inference validation.
+[lib]
+test = false
+doctest = false
 
 [package.metadata.docs.rs]
 features = ["qwen3", "nomic-v2-moe"]
