@@ -1,4 +1,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// Keep upstream tests disabled even when the application's workspace is tested
+// with --all-targets, which overrides Cargo.toml's `test = false` setting.
+#![cfg(not(test))]
 //! [FastEmbed](https://github.com/Anush008/fastembed-rs) - Library for generating vector embeddings and reranking locally.
 //!
 //! # What's here
