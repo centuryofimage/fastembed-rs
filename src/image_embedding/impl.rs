@@ -3,6 +3,9 @@ use hf_hub::api::sync::ApiRepo;
 use image::DynamicImage;
 use ndarray::{Array3, ArrayView3};
 use ort::{session::Session, value::Value};
+#[cfg(feature = "ort-profiling")]
+use std::sync::atomic::{AtomicU64, Ordering};
+
 #[cfg(feature = "hf-hub")]
 use std::path::PathBuf;
 use std::{io::Cursor, path::Path};
@@ -20,6 +23,38 @@ use super::{
     utils::Compose,
     ImageEmbedding, ImagePreprocessor, DEFAULT_BATCH_SIZE,
 };
+
+#[cfg(feature = "ort-profiling")]
+static PROFILE_ID: AtomicU64 = AtomicU64::new(0);
+
+fn image_session_builder(
+    environment: Option<ort::environment::Environment>,
+    execution_providers: Vec<ort::ep::ExecutionProviderDispatch>,
+    intra_threads: Option<usize>,
+    session_config: Vec<(String, String)>,
+) -> Result<ort::session::builder::SessionBuilder> {
+    let mut builder =
+        init_session_builder(environment, execution_providers, intra_threads, session_config)?;
+    if std::env::var_os("NICEGAL_ORT_TRACE").is_some() {
+        builder = builder
+            .with_log_level(ort::logging::LogLevel::Verbose)
+            .map_err(|error| Error::OrtBuilder(error.to_string()))?
+            .with_log_verbosity(1)
+            .map_err(|error| Error::OrtBuilder(error.to_string()))?;
+    }
+    #[cfg(feature = "ort-profiling")]
+    if let Some(directory) = std::env::var_os("NICEGAL_ORT_PROFILE_DIR") {
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| Error::OrtBuilder(error.to_string()))?;
+        let id = PROFILE_ID.fetch_add(1, Ordering::Relaxed);
+        let prefix =
+            std::path::PathBuf::from(directory).join(format!("image-{}-{id}", std::process::id()));
+        builder = builder
+            .with_profiling(prefix)
+            .map_err(|error| Error::OrtBuilder(error.to_string()))?;
+    }
+    Ok(builder)
+}
 
 impl ImageEmbedding {
     /// Load cached image encoder files without constructing a network client.
@@ -44,7 +79,7 @@ impl ImageEmbedding {
             return Ok(None);
         };
         let preprocessor = ImagePreprocessor::new(Compose::from_file(config)?);
-        let session = init_session_builder(execution_providers, intra_threads, session_config)?
+        let session = image_session_builder(environment, execution_providers, intra_threads, session_config)?
             .commit_from_file(model)?;
         Ok(Some(Self::new(preprocessor, session)))
     }
@@ -90,7 +125,7 @@ impl ImageEmbedding {
                     source: Box::new(e),
                 })?;
 
-        let session = init_session_builder(
+        let session = image_session_builder(
             environment,
             execution_providers,
             intra_threads,
@@ -117,7 +152,7 @@ impl ImageEmbedding {
 
         let preprocessor = ImagePreprocessor::new(Compose::from_bytes(model.preprocessor_file)?);
 
-        let session = init_session_builder(
+        let session = image_session_builder(
             environment,
             execution_providers,
             intra_threads,
@@ -145,7 +180,7 @@ impl ImageEmbedding {
         let config = serde_json::to_vec(&config)
             .map_err(|error| Error::PreprocessorConfig(error.to_string()))?;
         let preprocessor = ImagePreprocessor::new(Compose::from_bytes(config)?);
-        let session = init_session_builder(execution_providers, intra_threads, session_config)?
+        let session = image_session_builder(environment, execution_providers, intra_threads, session_config)?
             .commit_from_file(path)?;
         Ok(Self::new(preprocessor, session))
     }
@@ -162,7 +197,7 @@ impl ImageEmbedding {
             session_config,
         } = options;
         let preprocessor = ImagePreprocessor::new(Compose::from_deepghs_bytes(preprocessor_file)?);
-        let session = init_session_builder(execution_providers, intra_threads, session_config)?
+        let session = image_session_builder(environment, execution_providers, intra_threads, session_config)?
             .commit_from_file(path)?;
         let mut model = Self::new(preprocessor, session);
         model.output_key = Some("embeddings");
@@ -181,6 +216,8 @@ impl ImageEmbedding {
             preprocessor,
             session,
             output_key: None,
+            #[cfg(feature = "ort-profiling")]
+            profiling_enabled: std::env::var_os("NICEGAL_ORT_PROFILE_DIR").is_some(),
         }
     }
 
