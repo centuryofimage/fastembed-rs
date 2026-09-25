@@ -132,6 +132,22 @@ pub struct ImageEmbedding {
     pub(crate) preprocessor: ImagePreprocessor,
     pub(crate) session: Session,
     pub(crate) output_key: Option<&'static str>,
+    #[cfg(feature = "ort-profiling")]
+    pub(crate) profiling_enabled: bool,
+}
+
+#[cfg(feature = "ort-profiling")]
+impl Drop for ImageEmbedding {
+    fn drop(&mut self) {
+        if self.profiling_enabled {
+            match self.session.end_profiling() {
+                Ok(path) => tracing::info!(path, "ONNX Runtime image profile written"),
+                Err(error) => {
+                    tracing::warn!(%error, "failed to finalize ONNX Runtime image profile")
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

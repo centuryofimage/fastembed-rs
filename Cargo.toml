@@ -36,6 +36,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 thiserror = "2"
+tracing = "0.1"
 hf-hub = { version = "0.5.0", default-features = false, optional = true }
 image = { version = "0.25.10", optional = true }
 ndarray = { version = "0.17.2", default-features = false }
@@ -68,6 +69,7 @@ qwen3 = ["dep:candle-core", "dep:candle-nn", "dep:image", "hf-hub"]
 nomic-v2-moe = ["dep:candle-core", "dep:candle-nn", "hf-hub"]
 
 image-models = ["dep:image"]
+ort-profiling = ["ort/api-25"]
 mkl = ["qwen3", "nomic-v2-moe", "dep:intel-mkl-src", "candle-nn/mkl", "candle-core/mkl"]
 accelerate = ["qwen3", "nomic-v2-moe", "dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate"]
 directml = ["ort/directml"]
