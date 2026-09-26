@@ -407,9 +407,7 @@ impl Compose {
         Ok(Self::new(vec![
             Box::new(ConvertToRGB),
             Box::new(ResizeDeepGhs { size, max_size }),
-            Box::new(CenterCrop {
-                size: (crop, crop),
-            }),
+            Box::new(CenterCrop { size: (crop, crop) }),
             Box::new(PILToNDarray),
             Box::new(Rescale { scale: 1.0 / 255.0 }),
             Box::new(Normalize { mean, std }),
@@ -635,9 +633,7 @@ mod tests {
 
     #[test]
     fn center_crop_pads_smaller_non_square_images_as_chw() {
-        let crop = CenterCrop {
-            size: (224, 100),
-        };
+        let crop = CenterCrop { size: (224, 100) };
         let out = crop.transform(image(50, 40)).unwrap().array().unwrap();
         assert_eq!(out.dim(), (3, 100, 224));
         assert_eq!(out[[0, 50, 112]], 255.0);
