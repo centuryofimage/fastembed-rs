@@ -2,7 +2,10 @@
 use hf_hub::api::sync::ApiRepo;
 use image::DynamicImage;
 use ndarray::{Array3, ArrayView3};
-use ort::{session::Session, value::Value};
+use ort::{
+    session::{OutputSelector, RunOptions, Session},
+    value::Value,
+};
 #[cfg(feature = "ort-profiling")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -52,6 +55,15 @@ fn image_session_builder(
             .map_err(|error| Error::OrtBuilder(error.to_string()))?;
     }
     Ok(builder)
+}
+
+fn local_preprocessor(preprocessor_file: &[u8]) -> Result<ImagePreprocessor> {
+    let mut config: serde_json::Value = serde_json::from_slice(preprocessor_file)
+        .map_err(|error| Error::PreprocessorConfig(error.to_string()))?;
+    config["nicegal_pillow_resize"] = true.into();
+    let config = serde_json::to_vec(&config)
+        .map_err(|error| Error::PreprocessorConfig(error.to_string()))?;
+    Ok(ImagePreprocessor::new(Compose::from_bytes(config)?))
 }
 
 impl ImageEmbedding {
@@ -160,15 +172,34 @@ impl ImageEmbedding {
             intra_threads,
             session_config,
         } = options;
-        let mut config: serde_json::Value = serde_json::from_slice(preprocessor_file)
-            .map_err(|error| Error::PreprocessorConfig(error.to_string()))?;
-        config["nicegal_pillow_resize"] = true.into();
-        let config = serde_json::to_vec(&config)
-            .map_err(|error| Error::PreprocessorConfig(error.to_string()))?;
-        let preprocessor = ImagePreprocessor::new(Compose::from_bytes(config)?);
+        let preprocessor = local_preprocessor(preprocessor_file)?;
         let session = image_session_builder(execution_providers, intra_threads, session_config)?
             .commit_from_file(path)?;
         Ok(Self::new(preprocessor, session))
+    }
+
+    /// A session builder configured like the ones this type builds itself, for callers that
+    /// construct their own session and pass it to [`Self::try_new_from_session`].
+    pub fn session_builder(
+        options: ImageInitOptionsUserDefined,
+    ) -> Result<ort::session::builder::SessionBuilder> {
+        let ImageInitOptionsUserDefined {
+            execution_providers,
+            intra_threads,
+            session_config,
+        } = options;
+        image_session_builder(execution_providers, intra_threads, session_config)
+    }
+
+    /// Wrap a session the caller built, for example from an edited graph. Preprocessing matches
+    /// [`Self::try_new_from_path`].
+    pub fn try_new_from_session(session: Session, preprocessor_file: &[u8]) -> Result<Self> {
+        Ok(Self::new(local_preprocessor(preprocessor_file)?, session))
+    }
+
+    /// The underlying session, for running outputs other than the embedding.
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
     }
 
     /// Load a DeepGHS SigLIP ONNX encoder with its native Pillow transform description.
@@ -332,21 +363,24 @@ impl ImageEmbedding {
     /// This separates CPU image preprocessing from mutable ONNX Runtime inference, allowing
     /// callers to prepare later batches while the accelerator processes the current batch.
     pub fn embed_preprocessed(&mut self, inputs: Vec<Array3<f32>>) -> Result<Vec<Embedding>> {
-        // Extract the batch size
-        let inputs_view: Vec<ArrayView3<f32>> = inputs.iter().map(|img| img.view()).collect();
-        let pixel_values_array = ndarray::stack(ndarray::Axis(0), &inputs_view)
-            .map_err(|e| Error::InvalidShape(e.to_string()))?;
-
+        let pixel_values = Self::pixel_values(&inputs)?;
         let input_name = self.session.inputs()[0].name().to_string();
-        let session_inputs = ort::inputs![
-            input_name => Value::from_array(pixel_values_array)
-                .map_err(|e| Error::OrtSession(e.to_string()))?,
-        ];
+        let session_inputs = ort::inputs![input_name => pixel_values];
 
-        let outputs = self
-            .session
-            .run(session_inputs)
-            .map_err(|e| Error::OrtSession(e.to_string()))?;
+        // A selected key also leaves any additional graph outputs on the device.
+        let selected = self
+            .output_key
+            .map(|key| {
+                RunOptions::new()
+                    .map(|options| options.with_outputs(OutputSelector::no_default().with(key)))
+                    .map_err(|e| Error::OrtSession(e.to_string()))
+            })
+            .transpose()?;
+        let outputs = match &selected {
+            Some(options) => self.session.run_with_options(session_inputs, options),
+            None => self.session.run(session_inputs),
+        }
+        .map_err(|e| Error::OrtSession(e.to_string()))?;
 
         // Try to get the only output key
         // If multiple, then default to few known keys `image_embeds` and `last_hidden_state`
@@ -416,5 +450,14 @@ impl ImageEmbedding {
         };
 
         Ok(embeddings)
+    }
+
+    fn pixel_values(inputs: &[Array3<f32>]) -> Result<Value> {
+        let views: Vec<ArrayView3<f32>> = inputs.iter().map(|img| img.view()).collect();
+        let stacked = ndarray::stack(ndarray::Axis(0), &views)
+            .map_err(|e| Error::InvalidShape(e.to_string()))?;
+        Ok(Value::from_array(stacked)
+            .map_err(|e| Error::OrtSession(e.to_string()))?
+            .into_dyn())
     }
 }

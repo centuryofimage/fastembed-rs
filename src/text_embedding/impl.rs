@@ -15,6 +15,7 @@ use ort::session::Session;
 #[cfg(feature = "hf-hub")]
 use std::path::PathBuf;
 use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer};
+use tracing::debug_span;
 
 #[cfg(feature = "hf-hub")]
 use super::TextInitOptions;
@@ -147,20 +148,30 @@ impl TextEmbedding {
     }
 
     /// Load a local paired text encoder, including ONNX external tensor files beside the graph.
+    #[tracing::instrument(name = "fastembed_text_from_path", level = "debug", skip_all)]
     pub fn try_new_from_path(
         path: impl AsRef<std::path::Path>,
         tokenizer_files: crate::common::TokenizerFiles,
         options: InitOptionsUserDefined,
     ) -> Result<Self> {
-        let (mut session_builder, max_length) = options.into_session_builder()?;
-        let mut tokenizer = load_tokenizer(tokenizer_files, max_length)?;
+        let (mut session_builder, max_length) = {
+            let _span = debug_span!("text_session_builder").entered();
+            options.into_session_builder()?
+        };
+        let mut tokenizer = {
+            let _span = debug_span!("text_tokenizer_load").entered();
+            load_tokenizer(tokenizer_files, max_length)?
+        };
         if let Some(padding) = tokenizer.get_padding().cloned() {
             tokenizer.with_padding(Some(PaddingParams {
                 strategy: PaddingStrategy::Fixed(max_length),
                 ..padding
             }));
         }
-        let session = session_builder.commit_from_file(path)?;
+        let session = {
+            let _span = debug_span!("text_onnx_commit").entered();
+            session_builder.commit_from_file(path)?
+        };
         Ok(Self::new(
             tokenizer,
             session,
