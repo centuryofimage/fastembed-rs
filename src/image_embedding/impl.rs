@@ -57,13 +57,23 @@ fn image_session_builder(
     Ok(builder)
 }
 
-fn local_preprocessor(preprocessor_file: &[u8]) -> Result<ImagePreprocessor> {
-    let mut config: serde_json::Value = serde_json::from_slice(preprocessor_file)
-        .map_err(|error| Error::PreprocessorConfig(error.to_string()))?;
-    config["nicegal_pillow_resize"] = true.into();
-    let config = serde_json::to_vec(&config)
-        .map_err(|error| Error::PreprocessorConfig(error.to_string()))?;
-    Ok(ImagePreprocessor::new(Compose::from_bytes(config)?))
+impl ImagePreprocessor {
+    /// The preprocessing [`ImageEmbedding::try_new_from_path`] builds from a
+    /// `preprocessor_config.json`.
+    pub fn from_local_config(preprocessor_file: &[u8]) -> Result<Self> {
+        let mut config: serde_json::Value = serde_json::from_slice(preprocessor_file)
+            .map_err(|error| Error::PreprocessorConfig(error.to_string()))?;
+        config["nicegal_pillow_resize"] = true.into();
+        let config = serde_json::to_vec(&config)
+            .map_err(|error| Error::PreprocessorConfig(error.to_string()))?;
+        Ok(Self::new(Compose::from_bytes(config)?))
+    }
+
+    /// The preprocessing [`ImageEmbedding::try_new_from_deepghs_path`] builds from a DeepGHS
+    /// transform description.
+    pub fn from_deepghs_config(preprocessor_file: &[u8]) -> Result<Self> {
+        Ok(Self::new(Compose::from_deepghs_bytes(preprocessor_file)?))
+    }
 }
 
 impl ImageEmbedding {
@@ -172,7 +182,7 @@ impl ImageEmbedding {
             intra_threads,
             session_config,
         } = options;
-        let preprocessor = local_preprocessor(preprocessor_file)?;
+        let preprocessor = ImagePreprocessor::from_local_config(preprocessor_file)?;
         let session = image_session_builder(execution_providers, intra_threads, session_config)?
             .commit_from_file(path)?;
         Ok(Self::new(preprocessor, session))
@@ -191,10 +201,9 @@ impl ImageEmbedding {
         image_session_builder(execution_providers, intra_threads, session_config)
     }
 
-    /// Wrap a session the caller built, for example from an edited graph. Preprocessing matches
-    /// [`Self::try_new_from_path`].
-    pub fn try_new_from_session(session: Session, preprocessor_file: &[u8]) -> Result<Self> {
-        Ok(Self::new(local_preprocessor(preprocessor_file)?, session))
+    /// Wrap a session the caller built, for example from an edited graph.
+    pub fn try_new_from_session(session: Session, preprocessor: ImagePreprocessor) -> Self {
+        Self::new(preprocessor, session)
     }
 
     /// The underlying session, for running outputs other than the embedding.
@@ -213,7 +222,7 @@ impl ImageEmbedding {
             intra_threads,
             session_config,
         } = options;
-        let preprocessor = ImagePreprocessor::new(Compose::from_deepghs_bytes(preprocessor_file)?);
+        let preprocessor = ImagePreprocessor::from_deepghs_config(preprocessor_file)?;
         let session = image_session_builder(execution_providers, intra_threads, session_config)?
             .commit_from_file(path)?;
         let mut model = Self::new(preprocessor, session);
