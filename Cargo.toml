@@ -39,7 +39,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 thiserror = "2"
 tracing = "0.1"
 hf-hub = { version = "0.5.0", default-features = false, optional = true }
-image = { version = "0.25.10", optional = true }
+# Nicegal supplies decoded pixels; avoid enabling unrelated image codecs through this dependency.
+image = { version = "0.25.10", optional = true, default-features = false }
 # The ONNX Runtime stack, behind the `onnx` feature (on by default).
 ndarray = { version = "0.17.2", default-features = false, optional = true }
 ort = { version = "=2.0.0-rc.15", default-features = false, optional = true, features = [
