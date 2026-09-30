@@ -287,8 +287,10 @@ pub fn pull_from_hf(
 /// Resolve the cache directory without constructing a network client.
 #[cfg(feature = "hf-hub")]
 pub(crate) fn hf_cache_dir(default_cache_dir: PathBuf) -> PathBuf {
-    std::env::var("HF_HOME")
-        .map(PathBuf::from)
+    // HF_HOME is the Hugging Face root (which also holds the token); repositories
+    // live in its hub child. Match hf_hub::Cache::from_env and our downloader.
+    std::env::var_os("HF_HOME")
+        .map(|home| PathBuf::from(home).join("hub"))
         .unwrap_or(default_cache_dir)
 }
 
