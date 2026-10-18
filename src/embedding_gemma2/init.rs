@@ -317,6 +317,34 @@ impl UserDefinedEmbeddingGemma2Model {
     }
 }
 
+/// Sessions the caller built, for [`EmbeddingGemma2::try_new_from_sessions`].
+#[non_exhaustive]
+pub struct EmbeddingGemma2Sessions {
+    pub text: Session,
+    pub vision: Option<Session>,
+    pub audio: Option<Session>,
+}
+
+impl EmbeddingGemma2Sessions {
+    pub fn new(text: Session) -> Self {
+        Self {
+            text,
+            vision: None,
+            audio: None,
+        }
+    }
+
+    pub fn with_vision(mut self, session: Session) -> Self {
+        self.vision = Some(session);
+        self
+    }
+
+    pub fn with_audio(mut self, session: Session) -> Self {
+        self.audio = Some(session);
+        self
+    }
+}
+
 /// Token ids the model's input layout uses, read from its tokenizer.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SpecialTokens {
