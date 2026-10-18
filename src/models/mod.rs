@@ -1,6 +1,7 @@
 use crate::ModelInfo;
 
 pub mod bgem3;
+pub mod embedding_gemma2;
 pub mod image_embedding;
 pub mod model_info;
 pub mod quantization;
