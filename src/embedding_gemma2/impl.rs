@@ -2,7 +2,10 @@ use std::{io::Cursor, path::Path};
 
 use image::DynamicImage;
 use ndarray::{Array2, Array3, ArrayView2};
-use ort::{session::Session, value::Tensor};
+use ort::{
+    session::{builder::SessionBuilder, Session},
+    value::Tensor,
+};
 use tokenizers::Tokenizer;
 
 use crate::{
@@ -15,8 +18,8 @@ use crate::{
 use super::init::EmbeddingGemma2InitOptions;
 use super::{
     init::{
-        EmbeddingGemma2, EmbeddingGemma2InitOptionsUserDefined, EmbeddingGemma2Settings,
-        SpecialTokens, UserDefinedEmbeddingGemma2Model, VisionTokenBudget,
+        EmbeddingGemma2, EmbeddingGemma2InitOptionsUserDefined, EmbeddingGemma2Sessions,
+        EmbeddingGemma2Settings, SpecialTokens, UserDefinedEmbeddingGemma2Model, VisionTokenBudget,
     },
     preprocess::{
         EmbeddingGemma2Audio, EmbeddingGemma2Image, EmbeddingGemma2Preprocessor,
@@ -100,6 +103,33 @@ impl EmbeddingGemma2 {
         let vision = model.vision_graph.as_deref().map(load).transpose()?;
         let audio = model.audio_graph.as_deref().map(load).transpose()?;
         Self::new(text, vision, audio, &model.tokenizer_file, settings)
+    }
+
+    /// A session builder configured like the ones this type builds itself, for callers that
+    /// build their own sessions for [`Self::try_new_from_sessions`].
+    pub fn session_builder(
+        options: &EmbeddingGemma2InitOptionsUserDefined,
+    ) -> Result<SessionBuilder> {
+        init_session_builder(
+            options.execution_providers.clone(),
+            options.intra_threads,
+            options.session_config.clone(),
+        )
+    }
+
+    /// Wrap sessions the caller built, for example with dimension overrides or with encoders on
+    /// different execution providers.
+    pub fn try_new_from_sessions(
+        sessions: EmbeddingGemma2Sessions,
+        tokenizer_file: &[u8],
+        settings: EmbeddingGemma2Settings,
+    ) -> Result<Self> {
+        let EmbeddingGemma2Sessions {
+            text,
+            vision,
+            audio,
+        } = sessions;
+        Self::new(text, vision, audio, tokenizer_file, settings)
     }
 
     fn new(
@@ -459,8 +489,7 @@ impl EmbeddingGemma2 {
                 "pixel_values" => Tensor::from_array(pixels)?,
                 "pixel_position_ids" => Tensor::from_array(positions)?,
             ])?;
-            let expected: usize = chunk.iter().map(|image| image.soft_tokens()).sum();
-            parts.push(features(&outputs["image_features"], expected, "vision")?);
+            parts.push(vision_features(&outputs["image_features"], chunk)?);
         }
         concatenate(parts)
     }
@@ -571,6 +600,42 @@ fn features(value: &ort::value::DynValue, expected: usize, encoder: &str) -> Res
         )));
     }
     Array2::from_shape_vec((expected, FEATURE_WIDTH), data.to_vec())
+        .map_err(|e| Error::InvalidShape(e.to_string()))
+}
+
+/// The occupied soft tokens of each image, in order. Encoders return either only those, or every
+/// pooled slot (`budget` per image, occupied ones first), which keeps their output shape fixed.
+fn vision_features(
+    value: &ort::value::DynValue,
+    images: &[&EmbeddingGemma2Image],
+) -> Result<Array2<f32>> {
+    let occupied: usize = images.iter().map(|image| image.soft_tokens()).sum();
+    let slots = images[0].budget().tokens();
+    let (shape, data) = value
+        .try_extract_tensor::<f32>()
+        .map_err(|e| Error::TensorExtraction(e.to_string()))?;
+    if shape.len() != 2 || shape[1] != FEATURE_WIDTH as i64 {
+        return Err(Error::InvalidShape(format!(
+            "vision encoder returned {shape:?}, expected rows of {FEATURE_WIDTH}"
+        )));
+    }
+    let rows = shape[0] as usize;
+    if rows == occupied {
+        return Array2::from_shape_vec((rows, FEATURE_WIDTH), data.to_vec())
+            .map_err(|e| Error::InvalidShape(e.to_string()));
+    }
+    if rows != images.len() * slots {
+        return Err(Error::InvalidShape(format!(
+            "vision encoder returned {rows} rows for {occupied} soft tokens in {} slots",
+            images.len() * slots
+        )));
+    }
+    let mut compact = Vec::with_capacity(occupied * FEATURE_WIDTH);
+    for (index, image) in images.iter().enumerate() {
+        let start = index * slots * FEATURE_WIDTH;
+        compact.extend_from_slice(&data[start..start + image.soft_tokens() * FEATURE_WIDTH]);
+    }
+    Array2::from_shape_vec((occupied, FEATURE_WIDTH), compact)
         .map_err(|e| Error::InvalidShape(e.to_string()))
 }
 

@@ -138,8 +138,8 @@ pub use crate::models::image_embedding::ImageEmbeddingModel;
 pub use crate::embedding_gemma2::{
     EmbeddingGemma2, EmbeddingGemma2Audio, EmbeddingGemma2Image, EmbeddingGemma2InitOptions,
     EmbeddingGemma2InitOptionsUserDefined, EmbeddingGemma2Input, EmbeddingGemma2Preprocessor,
-    EmbeddingGemma2Settings, EmbeddingGemma2Video, UserDefinedEmbeddingGemma2Model,
-    VisionTokenBudget, EMBEDDING_GEMMA2_QUERY_PROMPT,
+    EmbeddingGemma2Sessions, EmbeddingGemma2Settings, EmbeddingGemma2Video,
+    UserDefinedEmbeddingGemma2Model, VisionTokenBudget, EMBEDDING_GEMMA2_QUERY_PROMPT,
 };
 pub use crate::models::embedding_gemma2::EmbeddingGemma2Model;
 
