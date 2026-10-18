@@ -476,6 +476,7 @@ impl EmbeddingGemma2 {
     }
 
     /// Soft tokens for every image or frame, concatenated in order.
+    #[tracing::instrument(name = "gemma_vision", level = "debug", skip_all, fields(images = images.len()))]
     fn encode_vision(&mut self, images: &[&EmbeddingGemma2Image]) -> Result<Array2<f32>> {
         if images.is_empty() {
             return Ok(empty());
@@ -497,6 +498,7 @@ impl EmbeddingGemma2 {
         concatenate(parts)
     }
 
+    #[tracing::instrument(name = "gemma_audio", level = "debug", skip_all, fields(clips = clips.len()))]
     fn encode_audio(&mut self, clips: &[&EmbeddingGemma2Audio]) -> Result<Array2<f32>> {
         if clips.is_empty() {
             return Ok(empty());
@@ -526,6 +528,7 @@ impl EmbeddingGemma2 {
         features(&outputs["audio_features"], expected, "audio")
     }
 
+    #[tracing::instrument(name = "gemma_text", level = "debug", skip_all, fields(rows = ids.nrows()))]
     fn run_backbone(
         &mut self,
         ids: Array2<i64>,
