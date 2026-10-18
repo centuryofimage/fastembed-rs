@@ -46,6 +46,7 @@
 - [**jinaai/jina-embeddings-v2-base-code**](https://huggingface.co/jinaai/jina-embeddings-v2-base-code)
 - [**jinaai/jina-embeddings-v2-base-en**](https://huggingface.co/jinaai/jina-embeddings-v2-base-en)
 - [**google/embeddinggemma-300m**](https://huggingface.co/google/embeddinggemma-300m)
+- [**google/embeddinggemma-2**](https://huggingface.co/google/embeddinggemma-2)
 - [**nomic-ai/nomic-embed-text-v2-moe**](https://huggingface.co/nomic-ai/nomic-embed-text-v2-moe) - requires `nomic-v2-moe` feature (candle backend)
 - [**Qwen/Qwen3-Embedding-0.6B**](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) - requires `qwen3` feature (candle backend)
 - [**Qwen/Qwen3-Embedding-4B**](https://huggingface.co/Qwen/Qwen3-Embedding-4B) - requires `qwen3` feature (candle backend)
@@ -80,6 +81,7 @@ Quantized versions are also available for several models above (append `Q` to th
 - [**Qdrant/Unicom-ViT-B-16**](https://huggingface.co/Qdrant/Unicom-ViT-B-16)
 - [**Qdrant/Unicom-ViT-B-32**](https://huggingface.co/Qdrant/Unicom-ViT-B-32)
 - [**nomic-ai/nomic-embed-vision-v1.5**](https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5)
+- [**google/embeddinggemma-2**](https://huggingface.co/google/embeddinggemma-2)
 
 </details>
 
@@ -361,6 +363,51 @@ let sparse_emb = &output.sparse[0];
 println!("Sparse non-zero tokens: {}", sparse_emb.indices.len());
 
 println!("ColBERT token count: {}", output.colbert[0].len());
+```
+
+### EmbeddingGemma 2 Multimodal Embeddings
+
+The EmbeddingGemma 2 model maps text, images, video and audio into one 768-dimensional space. Quantized builds are available as `EmbeddingGemma2Model::EmbeddingGemma2Q` and the 4-bit `EmbeddingGemma2Model::EmbeddingGemma2Q4`.
+
+```rust
+use fastembed::{
+    EmbeddingGemma2, EmbeddingGemma2InitOptions, EmbeddingGemma2Model, EmbeddingGemma2Settings,
+    VisionTokenBudget, EMBEDDING_GEMMA2_QUERY_PROMPT,
+};
+
+// With default options
+let mut model = EmbeddingGemma2::try_new(Default::default())?;
+
+// With custom options (the audio encoder is only downloaded when enabled)
+let mut model = EmbeddingGemma2::try_new(
+    EmbeddingGemma2InitOptions::new(EmbeddingGemma2Model::EmbeddingGemma2)
+        .with_settings(EmbeddingGemma2Settings::new().with_image_budget(VisionTokenBudget::T140))
+        .with_audio(true)
+        .with_show_download_progress(true),
+)?;
+
+let images = vec!["assets/image_0.png", "assets/image_1.png"];
+
+// Generate image embeddings with the default batch size, 8
+let image_embeddings = model.embed(images, None)?;
+
+// Text queries take the query prefix and share the same space
+let queries = vec![format!("{EMBEDDING_GEMMA2_QUERY_PROMPT}blue cat")];
+let text_embeddings = model.embed_text(queries, None)?;
+
+println!("Embedding dimension: {}", image_embeddings[0].len()); // -> Embedding dimension: 768
+```
+
+Video and audio go through the preprocessor first:
+
+```rust
+// `frames` are decoded video frames, one per second; `samples` are mono 16 kHz audio samples
+let preprocessor = model.preprocessor();
+let video = preprocessor.preprocess_video(frames)?;
+let audio = preprocessor.preprocess_audio(&samples)?;
+
+let video_embeddings = model.embed_preprocessed_videos(vec![video])?;
+let audio_embeddings = model.embed_preprocessed_audio(vec![audio])?;
 ```
 
 ## Model cache
