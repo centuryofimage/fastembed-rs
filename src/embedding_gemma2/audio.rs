@@ -99,7 +99,7 @@ impl LogMelSpectrogram {
 pub(crate) fn soft_tokens(mask: &[bool]) -> usize {
     let mut mask = mask.to_vec();
     for _ in 0..2 {
-        let length = (mask.len() + 2 - 3) / 2 + 1;
+        let length = (mask.len() + 2).checked_sub(3).map_or(0, |n| n / 2 + 1);
         mask = mask.into_iter().step_by(2).take(length).collect();
     }
     mask.into_iter().filter(|&valid| valid).count()
