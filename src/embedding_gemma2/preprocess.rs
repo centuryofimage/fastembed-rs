@@ -240,3 +240,111 @@ fn uniform_indices(count: usize, limit: usize) -> Vec<usize> {
     indices.dedup();
     indices
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::RgbImage;
+
+    fn preprocessor() -> EmbeddingGemma2Preprocessor {
+        EmbeddingGemma2Preprocessor::new(
+            EmbeddingGemma2Settings::new()
+                .with_image_budget(VisionTokenBudget::T70)
+                .with_video_budget(VisionTokenBudget::T70)
+                .with_max_video_frames(4),
+        )
+    }
+
+    fn solid(width: u32, height: u32) -> DynamicImage {
+        DynamicImage::ImageRgb8(RgbImage::from_pixel(width, height, image::Rgb([255, 0, 0])))
+    }
+
+    #[test]
+    fn target_size_fits_the_budget_in_pooled_patches() {
+        assert_eq!(target_size(1000, 1000, 630).unwrap(), (384, 384));
+        assert_eq!(target_size(1000, 2000, 630).unwrap(), (240, 528));
+        assert_eq!(target_size(3000, 4000, 2520).unwrap(), (672, 912));
+        for (height, width) in [(1, 1), (17, 913), (4000, 3000), (768, 768)] {
+            for budget in [VisionTokenBudget::T70, VisionTokenBudget::T280] {
+                let (h, w) = target_size(height, width, budget.patches()).unwrap();
+                assert_eq!((h % 48, w % 48), (0, 0));
+                assert!((h / 16) as usize * (w / 16) as usize <= budget.patches());
+            }
+        }
+    }
+
+    #[test]
+    fn target_size_keeps_one_pool_row_for_extreme_aspect_ratios() {
+        assert_eq!(target_size(10, 2000, 630).unwrap(), (48, 3360));
+        assert_eq!(target_size(2000, 10, 630).unwrap(), (3360, 48));
+        assert!(target_size(0, 10, 630).is_err());
+    }
+
+    #[test]
+    fn image_patches_are_row_major_then_padded() {
+        let mut rgb = RgbImage::new(384, 384);
+        for (x, y, pixel) in rgb.enumerate_pixels_mut() {
+            *pixel = image::Rgb([(x % 256) as u8, (y % 256) as u8, 7]);
+        }
+        let image = preprocessor()
+            .preprocess_image(DynamicImage::ImageRgb8(rgb))
+            .unwrap();
+        assert_eq!(image.soft_tokens(), 64);
+        assert_eq!(image.budget(), VisionTokenBudget::T70);
+        assert_eq!(image.pixel_values.dim(), (630, 768));
+        assert_eq!(image.positions.dim(), (630, 2));
+
+        // Patch 25 is row 1, column 1: its first pixel is (16, 16) and the next row starts 48
+        // values later.
+        let patch = image.pixel_values.row(25);
+        assert_eq!(image.positions.row(25).to_vec(), vec![1, 1]);
+        assert_eq!(patch[0], 16.0 * RESCALE);
+        assert_eq!(patch[1], 16.0 * RESCALE);
+        assert_eq!(patch[2], 7.0 * RESCALE);
+        assert_eq!(patch[3], 17.0 * RESCALE);
+        assert_eq!(patch[48 + 1], 17.0 * RESCALE);
+        assert_eq!(image.positions.row(575).to_vec(), vec![23, 23]);
+
+        for row in 576..630 {
+            assert_eq!(image.positions.row(row).to_vec(), vec![-1, -1]);
+            assert!(image
+                .pixel_values
+                .row(row)
+                .iter()
+                .all(|&value| value == 0.0));
+        }
+    }
+
+    #[test]
+    fn custom_resize_must_return_the_requested_size() {
+        let preprocessor = preprocessor()
+            .with_resize(|image, _, _, _| Ok(image.resize_exact(10, 10, FilterType::Nearest)));
+        assert!(matches!(
+            preprocessor.preprocess_image(solid(1000, 1000)),
+            Err(Error::ImageTransform(_))
+        ));
+    }
+
+    #[test]
+    fn video_frames_are_subsampled_uniformly() {
+        assert_eq!(uniform_indices(3, 4), vec![0, 1, 2]);
+        assert_eq!(uniform_indices(10, 4), vec![0, 3, 6, 9]);
+        assert_eq!(uniform_indices(10, 1), vec![0]);
+        let indices = uniform_indices(100, 32);
+        assert_eq!((indices.len(), indices[0], indices[31]), (32, 0, 99));
+
+        let video = preprocessor()
+            .preprocess_video((0..10).map(|_| solid(384, 384)).collect())
+            .unwrap();
+        assert_eq!(video.frames().len(), 4);
+        assert_eq!(video.soft_tokens(), 4 * 64);
+        assert!(preprocessor().preprocess_video(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn audio_needs_at_least_one_soft_token() {
+        assert!(preprocessor().preprocess_audio(&[0.0; 100]).is_err());
+        let clip = preprocessor().preprocess_audio(&[0.0; 16_000]).unwrap();
+        assert_eq!(clip.soft_tokens(), 25);
+    }
+}
