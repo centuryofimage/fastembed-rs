@@ -467,6 +467,24 @@ fn default_environment() -> Result<Environment> {
     Ok(environment)
 }
 
+/// The WebGPU plugin EP only attaches through its registered device, not by name. Returns that
+/// device when WebGPU is among `execution_providers`.
+#[cfg(feature = "webgpu")]
+fn webgpu_device<'e>(
+    environment: &'e Environment,
+    execution_providers: &[ExecutionProviderDispatch],
+) -> Result<Option<ort::device::Device<'e>>> {
+    let webgpu = <ort::ep::WebGPU as ort::ep::ExecutionProvider>::NAME;
+    if !execution_providers.iter().any(|ep| ep.name() == webgpu) {
+        return Ok(None);
+    }
+    let device = environment
+        .devices()
+        .find(|device| device.ep().is_ok_and(|name| name == webgpu))
+        .ok_or_else(|| ort::Error::new("No native WebGPU device is available"))?;
+    Ok(Some(device))
+}
+
 #[cfg(feature = "onnx")]
 pub(crate) fn init_session_builder(
     environment: Option<Environment>,
@@ -495,30 +513,18 @@ pub(crate) fn init_session_builder(
 
     let builder = ort::session::Session::builder(&environment)?;
 
-    // The WebGPU plugin EP only attaches through its registered device, not by name.
     #[cfg(feature = "webgpu")]
-    let use_webgpu = execution_providers
-        .iter()
-        .any(|ep| ep.name() == <ort::ep::WebGPU as ort::ep::ExecutionProvider>::NAME);
+    let webgpu_device = webgpu_device(&environment, &execution_providers)?;
     #[cfg(not(feature = "webgpu"))]
-    let use_webgpu = false;
+    let webgpu_device = None;
 
-    let builder = if use_webgpu {
-        let device = environment
-            .devices()
-            .find(|device| {
-                device
-                    .ep()
-                    .is_ok_and(|name| name == <ort::ep::WebGPU as ort::ep::ExecutionProvider>::NAME)
-            })
-            .ok_or_else(|| ort::Error::new("No native WebGPU device is available"))?;
-        builder
+    let builder = match webgpu_device {
+        Some(device) => builder
             .with_devices([device], None)
-            .map_err(builder_error)?
-    } else {
-        builder
+            .map_err(builder_error)?,
+        None => builder
             .with_execution_providers(execution_providers)
-            .map_err(builder_error)?
+            .map_err(builder_error)?,
     };
 
     let mut builder = builder
