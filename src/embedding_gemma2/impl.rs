@@ -40,6 +40,7 @@ impl EmbeddingGemma2 {
     pub fn try_new(options: EmbeddingGemma2InitOptions) -> Result<Self> {
         let EmbeddingGemma2InitOptions {
             model_name,
+            environment,
             execution_providers,
             cache_dir,
             show_download_progress,
@@ -74,6 +75,7 @@ impl EmbeddingGemma2 {
         Self::try_new_from_user_defined(
             model,
             EmbeddingGemma2InitOptionsUserDefined {
+                environment,
                 execution_providers,
                 intra_threads,
                 session_config,
@@ -90,6 +92,7 @@ impl EmbeddingGemma2 {
         let settings = options.settings;
         let load = |path: &Path| -> Result<Session> {
             Ok(init_session_builder(
+                options.environment.clone(),
                 options.execution_providers.clone(),
                 options.intra_threads,
                 options.session_config.clone(),

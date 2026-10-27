@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use ort::{execution_providers::ExecutionProviderDispatch, session::Session};
+use ort::{environment::Environment, ep::ExecutionProviderDispatch, session::Session};
 use tokenizers::Tokenizer;
 
-use crate::{get_cache_dir, models::embedding_gemma2::EmbeddingGemma2Model};
+use crate::{get_cache_dir, init::ProviderNames, models::embedding_gemma2::EmbeddingGemma2Model};
 
 use super::preprocess::EmbeddingGemma2Preprocessor;
 
@@ -96,10 +96,11 @@ impl EmbeddingGemma2Settings {
 }
 
 /// Options for [`EmbeddingGemma2::try_new`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct EmbeddingGemma2InitOptions {
     pub model_name: EmbeddingGemma2Model,
+    pub environment: Option<Environment>,
     pub execution_providers: Vec<ExecutionProviderDispatch>,
     pub cache_dir: PathBuf,
     pub show_download_progress: bool,
@@ -120,6 +121,7 @@ impl Default for EmbeddingGemma2InitOptions {
     fn default() -> Self {
         Self {
             model_name: EmbeddingGemma2Model::default(),
+            environment: None,
             execution_providers: Vec::new(),
             cache_dir: get_cache_dir().into(),
             show_download_progress: true,
@@ -142,6 +144,11 @@ impl EmbeddingGemma2InitOptions {
 
     pub fn with_cache_dir(mut self, cache_dir: PathBuf) -> Self {
         self.cache_dir = cache_dir;
+        self
+    }
+
+    pub fn with_environment(mut self, environment: Environment) -> Self {
+        self.environment = Some(environment);
         self
     }
 
@@ -185,9 +192,10 @@ impl EmbeddingGemma2InitOptions {
 }
 
 /// Options for [`EmbeddingGemma2::try_new_from_user_defined`].
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct EmbeddingGemma2InitOptionsUserDefined {
+    pub environment: Option<Environment>,
     pub execution_providers: Vec<ExecutionProviderDispatch>,
     pub intra_threads: Option<usize>,
     pub session_config: Vec<(String, String)>,
@@ -197,6 +205,11 @@ pub struct EmbeddingGemma2InitOptionsUserDefined {
 impl EmbeddingGemma2InitOptionsUserDefined {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_environment(mut self, environment: Environment) -> Self {
+        self.environment = Some(environment);
+        self
     }
 
     pub fn with_execution_providers(
@@ -223,9 +236,45 @@ impl EmbeddingGemma2InitOptionsUserDefined {
     }
 }
 
+impl std::fmt::Debug for EmbeddingGemma2InitOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmbeddingGemma2InitOptions")
+            .field("model_name", &self.model_name)
+            .field("environment", &self.environment)
+            .field(
+                "execution_providers",
+                &ProviderNames(&self.execution_providers),
+            )
+            .field("cache_dir", &self.cache_dir)
+            .field("show_download_progress", &self.show_download_progress)
+            .field("intra_threads", &self.intra_threads)
+            .field("session_config", &self.session_config)
+            .field("settings", &self.settings)
+            .field("vision", &self.vision)
+            .field("audio", &self.audio)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for EmbeddingGemma2InitOptionsUserDefined {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmbeddingGemma2InitOptionsUserDefined")
+            .field("environment", &self.environment)
+            .field(
+                "execution_providers",
+                &ProviderNames(&self.execution_providers),
+            )
+            .field("intra_threads", &self.intra_threads)
+            .field("session_config", &self.session_config)
+            .field("settings", &self.settings)
+            .finish()
+    }
+}
+
 impl From<EmbeddingGemma2InitOptions> for EmbeddingGemma2InitOptionsUserDefined {
     fn from(options: EmbeddingGemma2InitOptions) -> Self {
         Self {
+            environment: options.environment,
             execution_providers: options.execution_providers,
             intra_threads: options.intra_threads,
             session_config: options.session_config,
