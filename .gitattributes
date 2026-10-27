@@ -1,0 +1,6 @@
+# Normalize text to LF in the repository and working tree, so a tool that writes CRLF
+# cannot produce a whole-file diff. Mirrors nicegal-server's .gitattributes.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
