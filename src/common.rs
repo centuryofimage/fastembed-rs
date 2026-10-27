@@ -472,9 +472,35 @@ pub(crate) fn init_session_builder(
         None => default_environment()?,
     };
 
-    let mut builder = ort::session::Session::builder(&environment)?
-        .with_execution_providers(execution_providers)
-        .map_err(builder_error)?
+    let builder = ort::session::Session::builder(&environment)?;
+
+    // The WebGPU plugin EP only attaches through its registered device, not by name.
+    #[cfg(feature = "webgpu")]
+    let use_webgpu = execution_providers
+        .iter()
+        .any(|ep| ep.name() == <ort::ep::WebGPU as ort::ep::ExecutionProvider>::NAME);
+    #[cfg(not(feature = "webgpu"))]
+    let use_webgpu = false;
+
+    let builder = if use_webgpu {
+        let device = environment
+            .devices()
+            .find(|device| {
+                device
+                    .ep()
+                    .is_ok_and(|name| name == <ort::ep::WebGPU as ort::ep::ExecutionProvider>::NAME)
+            })
+            .ok_or_else(|| ort::Error::new("No native WebGPU device is available"))?;
+        builder
+            .with_devices([device], None)
+            .map_err(builder_error)?
+    } else {
+        builder
+            .with_execution_providers(execution_providers)
+            .map_err(builder_error)?
+    };
+
+    let mut builder = builder
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(builder_error)?
         .with_intra_threads(threads)
