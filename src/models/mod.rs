@@ -4,6 +4,8 @@ use crate::ModelInfo;
 #[cfg(feature = "onnx")]
 pub mod bgem3;
 #[cfg(feature = "onnx")]
+pub mod embedding_gemma2;
+#[cfg(feature = "onnx")]
 pub mod image_embedding;
 #[cfg(feature = "onnx")]
 pub mod model_info;

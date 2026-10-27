@@ -60,6 +60,7 @@ jobs:
           - { name: image, filter: "--test image-embeddings" }
           - { name: qwen3, filter: "--features qwen3 --lib --test qwen3", cache: test-qwen3 }
           - { name: nomic-v2-moe, filter: "--features nomic-v2-moe --test nomic_v2_moe", cache: test-nomic-v2-moe }
+          - { name: embedding-gemma2, filter: "--test embedding_gemma2" }
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

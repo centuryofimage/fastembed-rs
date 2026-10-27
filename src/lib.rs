@@ -7,6 +7,7 @@
 //! - [`SparseTextEmbedding`] - sparse (SPLADE) embeddings for lexical search
 //! - [`Bgem3Embedding`] - dense + sparse + ColBERT in a single pass (BGE-M3)
 //! - [`ImageEmbedding`] - image embeddings (CLIP, ResNet, ...)
+//! - [`EmbeddingGemma2`] - text, image, video and audio embeddings in one space
 //! - [`TextRerank`] - cross-encoder reranking of candidates
 //!
 //! These run on ONNX Runtime and need the `onnx` feature, which is on by default
@@ -98,6 +99,8 @@ mod common;
 #[cfg(feature = "onnx")]
 mod bgem3_embedding;
 #[cfg(feature = "image-models")]
+mod embedding_gemma2;
+#[cfg(feature = "image-models")]
 mod image_embedding;
 #[cfg(feature = "onnx")]
 mod init;
@@ -168,6 +171,17 @@ pub use crate::image_embedding::{
 };
 #[cfg(feature = "onnx")]
 pub use crate::models::image_embedding::ImageEmbeddingModel;
+
+// For EmbeddingGemma 2 multimodal embedding
+#[cfg(feature = "image-models")]
+pub use crate::embedding_gemma2::{
+    EmbeddingGemma2, EmbeddingGemma2Audio, EmbeddingGemma2Image, EmbeddingGemma2InitOptions,
+    EmbeddingGemma2InitOptionsUserDefined, EmbeddingGemma2Input, EmbeddingGemma2Preprocessor,
+    EmbeddingGemma2Settings, EmbeddingGemma2Video, UserDefinedEmbeddingGemma2Model,
+    VisionTokenBudget, EMBEDDING_GEMMA2_QUERY_PROMPT,
+};
+#[cfg(feature = "onnx")]
+pub use crate::models::embedding_gemma2::EmbeddingGemma2Model;
 
 // For Reranking
 #[cfg(feature = "onnx")]
