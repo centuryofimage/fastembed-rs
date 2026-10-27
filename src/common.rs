@@ -446,6 +446,24 @@ fn default_environment() -> Result<Environment> {
     Ok(environment)
 }
 
+/// The WebGPU plugin EP only attaches through its registered device, not by name. Returns that
+/// device when WebGPU is among `execution_providers`.
+#[cfg(feature = "webgpu")]
+fn webgpu_device<'e>(
+    environment: &'e Environment,
+    execution_providers: &[ExecutionProviderDispatch],
+) -> Result<Option<ort::device::Device<'e>>> {
+    let webgpu = <ort::ep::WebGPU as ort::ep::ExecutionProvider>::NAME;
+    if !execution_providers.iter().any(|ep| ep.name() == webgpu) {
+        return Ok(None);
+    }
+    let device = environment
+        .devices()
+        .find(|device| device.ep().is_ok_and(|name| name == webgpu))
+        .ok_or_else(|| ort::Error::new("No native WebGPU device is available"))?;
+    Ok(Some(device))
+}
+
 #[cfg(feature = "onnx")]
 pub(crate) fn init_session_builder(
     environment: Option<Environment>,
@@ -472,9 +490,23 @@ pub(crate) fn init_session_builder(
         None => default_environment()?,
     };
 
-    let mut builder = ort::session::Session::builder(&environment)?
-        .with_execution_providers(execution_providers)
-        .map_err(builder_error)?
+    let builder = ort::session::Session::builder(&environment)?;
+
+    #[cfg(feature = "webgpu")]
+    let webgpu_device = webgpu_device(&environment, &execution_providers)?;
+    #[cfg(not(feature = "webgpu"))]
+    let webgpu_device = None;
+
+    let builder = match webgpu_device {
+        Some(device) => builder
+            .with_devices([device], None)
+            .map_err(builder_error)?,
+        None => builder
+            .with_execution_providers(execution_providers)
+            .map_err(builder_error)?,
+    };
+
+    let mut builder = builder
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(builder_error)?
         .with_intra_threads(threads)
