@@ -36,8 +36,12 @@ fn image_session_builder(
     intra_threads: Option<usize>,
     session_config: Vec<(String, String)>,
 ) -> Result<ort::session::builder::SessionBuilder> {
-    let mut builder =
-        init_session_builder(environment, execution_providers, intra_threads, session_config)?;
+    let mut builder = init_session_builder(
+        environment,
+        execution_providers,
+        intra_threads,
+        session_config,
+    )?;
     if std::env::var_os("NICEGAL_ORT_TRACE").is_some() {
         builder = builder
             .with_log_level(ort::logging::LogLevel::Verbose)
@@ -84,6 +88,7 @@ impl ImageEmbedding {
     pub fn try_new_cached(options: ImageInitOptions) -> Result<Option<Self>> {
         let ImageInitOptions {
             model_name,
+            environment,
             execution_providers,
             cache_dir,
             intra_threads,
@@ -101,8 +106,13 @@ impl ImageEmbedding {
             return Ok(None);
         };
         let preprocessor = ImagePreprocessor::new(Compose::from_file(config)?);
-        let session = image_session_builder(environment, execution_providers, intra_threads, session_config)?
-            .commit_from_file(model)?;
+        let session = image_session_builder(
+            environment,
+            execution_providers,
+            intra_threads,
+            session_config,
+        )?
+        .commit_from_file(model)?;
         Ok(Some(Self::new(preprocessor, session)))
     }
 
@@ -192,13 +202,19 @@ impl ImageEmbedding {
         options: ImageInitOptionsUserDefined,
     ) -> Result<Self> {
         let ImageInitOptionsUserDefined {
+            environment,
             execution_providers,
             intra_threads,
             session_config,
         } = options;
         let preprocessor = ImagePreprocessor::from_local_config(preprocessor_file)?;
-        let session = image_session_builder(environment, execution_providers, intra_threads, session_config)?
-            .commit_from_file(path)?;
+        let session = image_session_builder(
+            environment,
+            execution_providers,
+            intra_threads,
+            session_config,
+        )?
+        .commit_from_file(path)?;
         Ok(Self::new(preprocessor, session))
     }
 
@@ -208,11 +224,17 @@ impl ImageEmbedding {
         options: ImageInitOptionsUserDefined,
     ) -> Result<ort::session::builder::SessionBuilder> {
         let ImageInitOptionsUserDefined {
+            environment,
             execution_providers,
             intra_threads,
             session_config,
         } = options;
-        image_session_builder(execution_providers, intra_threads, session_config)
+        image_session_builder(
+            environment,
+            execution_providers,
+            intra_threads,
+            session_config,
+        )
     }
 
     /// Wrap a session the caller built, for example from an edited graph.
@@ -232,13 +254,19 @@ impl ImageEmbedding {
         options: ImageInitOptionsUserDefined,
     ) -> Result<Self> {
         let ImageInitOptionsUserDefined {
+            environment,
             execution_providers,
             intra_threads,
             session_config,
         } = options;
         let preprocessor = ImagePreprocessor::from_deepghs_config(preprocessor_file)?;
-        let session = image_session_builder(environment, execution_providers, intra_threads, session_config)?
-            .commit_from_file(path)?;
+        let session = image_session_builder(
+            environment,
+            execution_providers,
+            intra_threads,
+            session_config,
+        )?
+        .commit_from_file(path)?;
         let mut model = Self::new(preprocessor, session);
         model.output_key = Some("embeddings");
         Ok(model)

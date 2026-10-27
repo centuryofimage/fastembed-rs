@@ -31,6 +31,7 @@ impl TextEmbedding {
         let TextInitOptions {
             max_length,
             model_name,
+            environment,
             execution_providers,
             cache_dir,
             intra_threads,
@@ -52,8 +53,13 @@ impl TextEmbedding {
             },
             max_length,
         )?;
-        let session = init_session_builder(execution_providers, intra_threads, session_config)?
-            .commit_from_file(&files[0])?;
+        let session = init_session_builder(
+            environment,
+            execution_providers,
+            intra_threads,
+            session_config,
+        )?
+        .commit_from_file(&files[0])?;
         Ok(Some(Self::new(
             tokenizer,
             session,

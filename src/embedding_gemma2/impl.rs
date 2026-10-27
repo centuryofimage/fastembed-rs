@@ -114,6 +114,7 @@ impl EmbeddingGemma2 {
         options: &EmbeddingGemma2InitOptionsUserDefined,
     ) -> Result<SessionBuilder> {
         init_session_builder(
+            options.environment.clone(),
             options.execution_providers.clone(),
             options.intra_threads,
             options.session_config.clone(),
